@@ -1,0 +1,18 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# 一時ファイル／エディタのバックアップ
+*~
+*.swp
+
+# 生成される Markdown（要約ファイル）は除外。ただし README.md は含める
+*.md
+!README.md
+
+# 一時ディレクトリ／ファイル
+*.tmp
+tmp*/
+
+# ログファイル
+*.log
