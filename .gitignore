@@ -16,3 +16,9 @@ tmp*/
 
 # ログファイル
 *.log
+
+# オーディオファイルは追跡しない
+*.mp3
+
+# special_terms.txtは追跡しない
+special_terms.txt
