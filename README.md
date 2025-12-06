@@ -1,4 +1,4 @@
-# Meeting Summarizer (Standalone Antigravity)
+# Meeting Summarizer
 
 音声ファイルをAI (OpenAI Whisper & GPT Models) を使って文字起こしし、要約をMarkdownファイルとして保存するCLIツールです。
 
