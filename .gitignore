@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+env/
+.env
+
+# Distribution / Packaging
+build/
+dist/
+*.egg-info/
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# Project specific outputs (Audio folders and timestamp folders if any)
+# Ignore folders that start with digits (timestamps) or look like audio filenames
+# It's hard to wildcard folder names generally without matching "tests", but let's try strict ignores for known outputs
+# Assuming audio processing creates folders in root:
+# Ignore ALL folders except specific ones is one way, but too aggressive.
+# Let's ignore specific file types and common output patterns.
+
+# Audio Files
+*.mp3
+*.wav
+*.m4a
+*.mp4
+
+# Transcripts and Summaries (if generated in root)
+*_transcript_*.txt
+*_summary_*.md
+# But we need to ignore the folders created for them.
+# There is no easy way to validly ignore "any folder that is not source".
+# So we rely on user not committing them, or specific ignores.
+# Since we copy audio to <filename>/, we can ignore that if we knew the filenames.
+# For now, let's ignore common large files and temp files.
+
+# System
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Do not ignore Markdown files generally (README, walkthrough etc needed)
+# *.md  <-- Removed this line to allow README.md and others
+# But we might want to ignore generated summaries if they pop up.
+# Since they are in subfolders now, and we are not ignoring all subfolders, they might show up.
+# We will rely on careful adding or ignore typical large dirs.
+
+# Special terms (keep or ignore? user had it ignored)
+special_terms.txt
