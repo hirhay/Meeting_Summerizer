@@ -1,4 +1,5 @@
-openai==1.78.1
+openai>=1.78.1
 pydub==0.25.1
 pytest
 pytest-mock
+audioop-lts; python_version >= '3.13'
