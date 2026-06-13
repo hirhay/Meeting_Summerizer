@@ -1,14 +1,7 @@
 import os
 import pytest
 from unittest.mock import MagicMock, patch, mock_open
-from meeting_summarizer import (
-    Config,
-    DEFAULT_SUMMARIZE_MODEL,
-    DEFAULT_TRANSCRIBE_MODEL,
-    MeetingSummarizer,
-    SUPPORTED_SUMMARIZE_MODELS,
-    SUPPORTED_TRANSCRIBE_MODELS,
-)
+from meeting_summarizer import Config, MeetingSummarizer, SUPPORTED_TRANSCRIBE_MODELS
 
 # --- Fixtures ---
 @pytest.fixture
@@ -18,8 +11,8 @@ def mock_config():
         max_file_size_mb=10,
         audio_chunk_length_ms=1000,
         special_terms_file="test_terms.txt",
-        default_transcribe_model=DEFAULT_TRANSCRIBE_MODEL,
-        default_summarize_model=DEFAULT_SUMMARIZE_MODEL
+        default_transcribe_model="gpt-4o-transcribe",
+        default_summarize_model="gpt-5.5"
     )
 
 @pytest.fixture
@@ -32,15 +25,9 @@ def summarizer(mock_config):
 def test_config_initialization():
     config = Config(api_key="key")
     assert config.api_key == "key"
-    assert config.default_transcribe_model == DEFAULT_TRANSCRIBE_MODEL
-    assert config.default_transcribe_model in SUPPORTED_TRANSCRIBE_MODELS
-    assert set(SUPPORTED_TRANSCRIBE_MODELS) == set(config.transcription_profiles)
-    assert config.default_summarize_model == DEFAULT_SUMMARIZE_MODEL
-    assert SUPPORTED_SUMMARIZE_MODELS == (DEFAULT_SUMMARIZE_MODEL,)
-
-def test_unsupported_transcribe_model_is_rejected(summarizer):
-    with pytest.raises(ValueError, match="未対応の文字起こしモデルです"):
-        summarizer.get_transcription_profile("unsupported-model")
+    assert config.default_transcribe_model == "gpt-4o-transcribe"
+    assert "whisper-1" in config.transcription_profiles
+    assert "gpt-4o-transcribe" in config.transcription_profiles
 
 def test_build_prompt_general(summarizer):
     transcript = "これはテストです。"
@@ -112,30 +99,28 @@ def test_transcribe_audio_large_file(summarizer):
 def test_summarize_transcript(summarizer):
     summarizer.client.responses.create.return_value.output_text = "Summary Result"
     
-    result = summarizer.summarize_transcript("Transc", [], "general", DEFAULT_SUMMARIZE_MODEL)
+    result = summarizer.summarize_transcript("Transc", [], "general", "gpt-5.5")
     assert result == "Summary Result"
     summarizer.client.responses.create.assert_called_once()
     call_kwargs = summarizer.client.responses.create.call_args.kwargs
-    assert call_kwargs['model'] == DEFAULT_SUMMARIZE_MODEL
+    assert call_kwargs['model'] == "gpt-5.5"
     assert "instructions" in call_kwargs
     assert "input" in call_kwargs
     assert call_kwargs["max_output_tokens"] == 1500
-    assert "temperature" not in call_kwargs
     assert "max_tokens" not in call_kwargs
     assert "max_completion_tokens" not in call_kwargs
 
 def test_summarize_transcript_uses_latest_gpt_model(summarizer):
     summarizer.client.responses.create.return_value.output_text = "Summary Result"
     
-    result = summarizer.summarize_transcript("Transc", [], "general", DEFAULT_SUMMARIZE_MODEL)
+    result = summarizer.summarize_transcript("Transc", [], "general", "gpt-5.5")
     assert result == "Summary Result"
     summarizer.client.responses.create.assert_called_once()
     
     call_kwargs = summarizer.client.responses.create.call_args.kwargs
-    assert call_kwargs['model'] == DEFAULT_SUMMARIZE_MODEL
+    assert call_kwargs['model'] == "gpt-5.5"
     assert "instructions" in call_kwargs
     assert "input" in call_kwargs
     assert call_kwargs["max_output_tokens"] == 1500
-    assert "temperature" not in call_kwargs
     assert "max_completion_tokens" not in call_kwargs
     assert "max_tokens" not in call_kwargs

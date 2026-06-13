@@ -73,7 +73,6 @@ python meeting_summarizer.py <音声ファイルパス> [オプション]
     *   `gpt-4o-transcribe`: 精度を優先する場合に推奨。長尺音声は20分単位に分割します。
     *   `whisper-1`: 25MB以内なら長めのMP3を一括処理しやすいモデル。25MBを超える場合は分割します。
 *   `--model-summarize`: 要約モデル (デフォルト: `gpt-5.5`)
-    *   PR 2では最新版GPTモデルのみをサポート対象にし、古い要約モデル名はCLIで受け付けません。
 
 
 ### 文字起こしモデルの使い分け
@@ -117,7 +116,7 @@ python meeting_summarizer.py long_meeting.mp3 --prompt-type meeting --model-tran
 開発用ライブラリ (`pytest`, `pytest-mock`) がインストールされていれば、テストを実行できます。
 
 ```bash
-pip install --upgrade -r requirements.txt
+pip install -r requirements.txt
 pytest tests/
 ```
 
