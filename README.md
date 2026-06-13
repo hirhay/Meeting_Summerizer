@@ -23,6 +23,7 @@
     *   `pyaudioop` の代替として、`requirements.txt` には `audioop-lts; python_version >= '3.13'` を条件付きで追加しています。
 *   `ffmpeg` がシステムパスに通っていること (pydub用)
 *   OpenAI API Key
+*   OpenAI Python SDK: Responses API対応版 (`requirements.txt` では `openai>=1.78.1` とし、古い固定バージョンに縛られないようにしています)
 
 ## インストール
 
@@ -41,7 +42,7 @@
 
 3.  **依存パッケージのインストール**
     ```bash
-    pip install -r requirements.txt
+    pip install --upgrade -r requirements.txt
     ```
 
 4.  **環境変数の設定**

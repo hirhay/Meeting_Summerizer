@@ -64,6 +64,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SUPPORTED_TRANSCRIBE_MODELS = ("gpt-4o-transcribe", "whisper-1")
+
 class MeetingSummarizer:
     def __init__(self, config: Config):
         self.config = config

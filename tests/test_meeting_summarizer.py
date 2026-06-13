@@ -1,7 +1,7 @@
 import os
 import pytest
 from unittest.mock import MagicMock, patch, mock_open
-from meeting_summarizer import MeetingSummarizer, Config
+from meeting_summarizer import Config, MeetingSummarizer, SUPPORTED_TRANSCRIBE_MODELS
 
 # --- Fixtures ---
 @pytest.fixture
