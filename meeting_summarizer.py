@@ -41,9 +41,8 @@ class Config:
     max_file_size_mb: int = 25
     audio_chunk_length_ms: int = 30 * 60 * 1000  # 30分
     special_terms_file: str = os.path.join(os.path.dirname(__file__), "special_terms.txt")
-    default_transcribe_model: str = DEFAULT_TRANSCRIBE_MODEL
-    default_summarize_model: str = DEFAULT_SUMMARIZE_MODEL
-    summary_char_limit: int = 2000
+    default_transcribe_model: str = "gpt-4o-transcribe"
+    default_summarize_model: str = "gpt-5.5"
     transcription_profiles: Optional[Dict[str, TranscriptionModelProfile]] = None
 
     def __post_init__(self):
@@ -70,6 +69,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SUPPORTED_TRANSCRIBE_MODELS = ("gpt-4o-transcribe", "whisper-1")
+
 class MeetingSummarizer:
     def __init__(self, config: Config):
         self.config = config
@@ -81,7 +82,7 @@ class MeetingSummarizer:
     def get_transcription_profile(self, model: str) -> TranscriptionModelProfile:
         """サポート対象の文字起こしモデル設定を取得する"""
         if model not in self.config.transcription_profiles:
-            supported = ", ".join(SUPPORTED_TRANSCRIBE_MODELS)
+            supported = ", ".join(sorted(self.config.transcription_profiles))
             raise ValueError(f"未対応の文字起こしモデルです: {model}。対応モデル: {supported}")
         return self.config.transcription_profiles[model]
 
@@ -246,13 +247,14 @@ class MeetingSummarizer:
         prompt, sys_msg = self.build_prompt(transcript, terms, prompt_type)
         try:
             logger.info(f"要約生成リクエスト中 (model={model})...")
-            content = self.create_response_text(
+            response = self.client.responses.create(
                 model=model,
                 instructions=sys_msg,
-                prompt=prompt,
+                input=prompt,
                 max_output_tokens=1500,
             )
 
+            content = getattr(response, "output_text", "")
             if content:
                 return self.compress_summary_for_discord(content, model=model)
             return ""
@@ -358,16 +360,11 @@ def main():
     )
     parser.add_argument(
         "--model-transcribe",
-        choices=SUPPORTED_TRANSCRIBE_MODELS,
-        default=DEFAULT_TRANSCRIBE_MODEL,
-        help=f"文字起こしモデル (default: {DEFAULT_TRANSCRIBE_MODEL})"
+        choices=["gpt-4o-transcribe", "whisper-1"],
+        default="gpt-4o-transcribe",
+        help="文字起こしモデル (default: gpt-4o-transcribe)"
     )
-    parser.add_argument(
-        "--model-summarize",
-        choices=SUPPORTED_SUMMARIZE_MODELS,
-        default=DEFAULT_SUMMARIZE_MODEL,
-        help=f"要約モデル (default: {DEFAULT_SUMMARIZE_MODEL})"
-    )
+    parser.add_argument("--model-summarize", default="gpt-5.5", help="要約モデル (default: gpt-5.5)")
 
     args = parser.parse_args()
 
