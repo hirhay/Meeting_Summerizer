@@ -1,23 +1,26 @@
 # Meeting Summarizer
 
-音声ファイルをAI (OpenAI Whisper & GPT Models) を使って文字起こしし、要約をMarkdownファイルとして保存するCLIツールです。
+音声ファイルをOpenAI APIで文字起こしし、最新版GPTモデルで要約してMarkdownファイルとして保存するCLIツールです。
 
 ## 特徴
 
-*   **高精度な文字起こし**: OpenAI Whisper API (`whisper-1`) を使用。
-*   **柔軟な要約**: GPT-4o や **GPT-5 / O1系モデル** に対応。
-*   **自動チャンク分割**: `pydub` を使用し、API制限を超える大きなファイルも安全に分割処理。
+*   **選べる文字起こしモデル**: 高精度な `gpt-4o-transcribe` と、長尺・大容量音声で扱いやすい `whisper-1` を選択可能。
+*   **最新版GPTモデルでの要約**: 要約はResponses APIと `gpt-5.5` をデフォルトで使用。
+*   **シンプルなResponses API実装**: `instructions` / `input` / `max_output_tokens` に統一し、古いモデル向けの `max_tokens` / `max_completion_tokens` 分岐は行いません。
+*   **モデル別の自動チャンク分割**: `pydub` を使用し、`gpt-4o-transcribe` は20分単位、`whisper-1` は主に25MB上限を基準に分割します。
 *   **ファイル整理機能**:
     *   音声ファイルごとにフォルダを自動作成。
     *   音声ファイルをそのフォルダにコピー。
     *   文字起こし結果 (`_transcript_<model>.txt`) をキャッシュし、再実行時はAPIコストを節約。
     *   要約結果 (`_summary_<model>.md`) も同フォルダに保存。
-*   **GPT-5 / O1 対応**: 新しいモデル (`gpt-5`, `o1`) では自動的に `max_completion_tokens` を使用し、トークン制限を緩和。
 *   **専門用語辞書**: `special_terms.txt` に用語を定義することで、文字起こしや要約の精度を向上。
 
 ## 必要要件
 
-*   Python 3.8+
+*   Python 3.12 推奨
+    *   このリポジトリでは `.python-version` で `3.12` を指定しています。
+    *   Python 3.13以降では標準ライブラリの `audioop` が削除されているため、`pydub` 利用時に互換レイヤーが必要になる場合があります。
+    *   `pyaudioop` の代替として、`requirements.txt` には `audioop-lts; python_version >= '3.13'` を条件付きで追加しています。
 *   `ffmpeg` がシステムパスに通っていること (pydub用)
 *   OpenAI API Key
 
@@ -25,9 +28,9 @@
 
 1.  **リポジトリをクローン** (またはファイルをダウンロード)
 
-2.  **仮想環境の作成と有効化** (推奨)
+2.  **Python 3.12の仮想環境を作成して有効化** (推奨)
     ```bash
-    python -m venv venv
+    python3.12 -m venv venv
     
     # Windows
     .\venv\Scripts\activate
@@ -65,19 +68,34 @@ python meeting_summarizer.py <音声ファイルパス> [オプション]
     *   `general`: 一般的な要約
     *   `meeting`: 会議議事録向け（目的、決定事項、アクションなど）
     *   `presentation`: プレゼン・講演向け（テーマ、結論、Q&Aなど）
-*   `--model-transcribe`: 文字起こしモデル (デフォルト: `whisper-1`)
-*   `--model-summarize`: 要約モデル (デフォルト: `gpt-4o`)。`gpt-5.1` などを指定可能。
+*   `--model-transcribe`: 文字起こしモデル (デフォルト: `gpt-4o-transcribe`)
+    *   `gpt-4o-transcribe`: 精度を優先する場合に推奨。長尺音声は20分単位に分割します。
+    *   `whisper-1`: 25MB以内なら長めのMP3を一括処理しやすいモデル。25MBを超える場合は分割します。
+*   `--model-summarize`: 要約モデル (デフォルト: `gpt-5.5`)
+
+
+### 文字起こしモデルの使い分け
+
+| モデル | 向いている用途 | 分割方針 |
+| --- | --- | --- |
+| `gpt-4o-transcribe` | 精度を優先したい会議・プレゼン録音 | 25MB上限に加え、長尺音声を避けるため20分単位で分割 |
+| `whisper-1` | 長めのMP3をなるべく一括で処理したい場合、既存運用との互換性を優先する場合 | 25MB以内なら一括、25MB超過時は音声全体を分割 |
 
 ### 実行例
 
-**会議の要約を GPT-4o で作成:**
+**会議の要約をデフォルトモデルで作成:**
 ```bash
 python meeting_summarizer.py meeting_recording.mp3 --prompt-type meeting
 ```
 
-**GPT-5.1 を指定して実行:**
+**プレゼンテーション録音をデフォルトの最新版GPTモデルで要約:**
 ```bash
-python meeting_summarizer.py lecture.mp3 --prompt-type presentation --model-summarize gpt-5.1
+python meeting_summarizer.py lecture.mp3 --prompt-type presentation
+```
+
+**長めのMP3を `whisper-1` で文字起こし:**
+```bash
+python meeting_summarizer.py long_meeting.mp3 --prompt-type meeting --model-transcribe whisper-1
 ```
 
 ### 出力構造
@@ -87,9 +105,9 @@ python meeting_summarizer.py lecture.mp3 --prompt-type presentation --model-summ
 例: `MyMeeting.mp3` を処理した場合
 ```
 ./MyMeeting/
-├── MyMeeting.mp3                  # コピーされた音声ファイル
-├── MyMeeting_transcript_whisper-1.txt  # 文字起こしテキスト (キャッシュ)
-└── MyMeeting_summary_gpt-4o.md    # 作成された要約
+├── MyMeeting.mp3                             # コピーされた音声ファイル
+├── MyMeeting_transcript_gpt-4o-transcribe.txt # 文字起こしテキスト (キャッシュ)
+└── MyMeeting_summary_gpt-5.5.md              # 作成された要約
 ```
 
 ## 開発・テスト
@@ -97,7 +115,7 @@ python meeting_summarizer.py lecture.mp3 --prompt-type presentation --model-summ
 開発用ライブラリ (`pytest`, `pytest-mock`) がインストールされていれば、テストを実行できます。
 
 ```bash
-pip install pytest pytest-mock
+pip install -r requirements.txt
 pytest tests/
 ```
 
