@@ -21,6 +21,11 @@ from openai import OpenAI
 from pydub import AudioSegment
 from pydub.exceptions import CouldntDecodeError
 
+DEFAULT_TRANSCRIBE_MODEL = "gpt-4o-transcribe"
+DEFAULT_SUMMARIZE_MODEL = "gpt-5.5"
+SUPPORTED_TRANSCRIBE_MODELS = (DEFAULT_TRANSCRIBE_MODEL, "whisper-1")
+SUPPORTED_SUMMARIZE_MODELS = (DEFAULT_SUMMARIZE_MODEL,)
+
 # --- 設定クラス ---
 @dataclass(frozen=True)
 class TranscriptionModelProfile:
