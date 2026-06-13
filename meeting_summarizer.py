@@ -4,7 +4,7 @@
 音声ファイルを文字起こしし、要約をMarkdownファイルに保存するスタンドアロンスクリプト。
 
 使用方法:
-    python meeting_summarizer.py <audio_file> [--prompt-type {general,meeting,presentation}] [--model-transcribe whisper-1] [--model-summarize gpt-4o]
+    python meeting_summarizer.py <audio_file> [--prompt-type {general,meeting,presentation}] [--model-transcribe {gpt-4o-transcribe,whisper-1}] [--model-summarize gpt-5.5]
 
 要約結果は処理実行日時(YYYYMMDD_HHMM)のフォルダに格納されます。
 """
@@ -14,25 +14,48 @@ import argparse
 import logging
 import datetime
 import tempfile
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 from openai import OpenAI
 from pydub import AudioSegment
 from pydub.exceptions import CouldntDecodeError
 
 # --- 設定クラス ---
+@dataclass(frozen=True)
+class TranscriptionModelProfile:
+    """文字起こしモデルごとの安全な分割設定"""
+    max_file_size_mb: int
+    max_chunk_sec: Optional[int]
+    check_duration_before_upload: bool
+
+
 @dataclass
 class Config:
     api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
     max_file_size_mb: int = 25
     audio_chunk_length_ms: int = 30 * 60 * 1000  # 30分
     special_terms_file: str = os.path.join(os.path.dirname(__file__), "special_terms.txt")
-    default_transcribe_model: str = "whisper-1"
-    default_summarize_model: str = "gpt-4o"
-    # GPT-4oなどはチャンク長を長く取れるが、安全側でWhisperに合わせて設定するか、モデルごとに変えるロジックを維持
-    chunk_sec_gpt4o: int = 1200
-    chunk_sec_default: int = 600
+    default_transcribe_model: str = "gpt-4o-transcribe"
+    default_summarize_model: str = "gpt-5.5"
+    transcription_profiles: Optional[Dict[str, TranscriptionModelProfile]] = None
+
+    def __post_init__(self):
+        if self.transcription_profiles is None:
+            self.transcription_profiles = {
+                # Whisperは主に25MBのアップロード上限を意識し、長さ制限は設けない。
+                "whisper-1": TranscriptionModelProfile(
+                    max_file_size_mb=25,
+                    max_chunk_sec=None,
+                    check_duration_before_upload=False,
+                ),
+                # gpt-4o-transcribeは精度面のメリットがある一方、長尺音声は安全側で20分単位に分割する。
+                "gpt-4o-transcribe": TranscriptionModelProfile(
+                    max_file_size_mb=25,
+                    max_chunk_sec=20 * 60,
+                    check_duration_before_upload=True,
+                ),
+            }
 
 # --- ロギング設定 ---
 logging.basicConfig(
@@ -41,6 +64,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SUPPORTED_TRANSCRIBE_MODELS = ("gpt-4o-transcribe", "whisper-1")
+
 class MeetingSummarizer:
     def __init__(self, config: Config):
         self.config = config
@@ -48,6 +73,13 @@ class MeetingSummarizer:
             logger.error("環境変数 OPENAI_API_KEY が設定されていません。")
             sys.exit(1)
         self.client = OpenAI(api_key=self.config.api_key)
+
+    def get_transcription_profile(self, model: str) -> TranscriptionModelProfile:
+        """サポート対象の文字起こしモデル設定を取得する"""
+        if model not in self.config.transcription_profiles:
+            supported = ", ".join(SUPPORTED_TRANSCRIBE_MODELS)
+            raise ValueError(f"未対応の文字起こしモデルです: {model}。対応モデル: {supported}")
+        return self.config.transcription_profiles[model]
 
     def load_special_terms(self) -> List[str]:
         """専門用語リストを読み込む"""
@@ -114,20 +146,15 @@ class MeetingSummarizer:
         if not os.path.isfile(path):
             raise FileNotFoundError(f"ファイルが見つかりません: {path}")
 
+        profile = self.get_transcription_profile(model)
         size_mb = os.path.getsize(path) / (1024 * 1024)
         logger.info(f"文字起こし開始: {path} ({size_mb:.2f}MB, model={model})")
 
-        # 安全チャンク長の決定
-        if model.startswith("gpt-4o"):
-            max_chunk_sec = self.config.chunk_sec_gpt4o
-        else:
-            max_chunk_sec = self.config.chunk_sec_default
-
-        # 小ファイルは一括処理
-        if size_mb <= self.config.max_file_size_mb:
+        # 小ファイルかつモデル側の時間チェックが不要な場合は一括処理
+        if size_mb <= profile.max_file_size_mb and not profile.check_duration_before_upload:
             return self._transcribe_chunk(path, model=model)
 
-        # 大ファイルはチャンク分割
+        # gpt-4o-transcribeのように長尺音声を安全側で分割したいモデル、または大ファイルは音声長を見て分割する
         try:
             audio = AudioSegment.from_file(path)
         except CouldntDecodeError:
@@ -137,13 +164,19 @@ class MeetingSummarizer:
             logger.error(f"音声読み込みエラー: {e}")
             sys.exit(1)
 
+        duration_ms = len(audio)
+        max_chunk_ms = profile.max_chunk_sec * 1000 if profile.max_chunk_sec else duration_ms
+
+        # サイズ・長さのどちらもモデル設定内なら一括処理
+        if size_mb <= profile.max_file_size_mb and duration_ms <= max_chunk_ms:
+            return self._transcribe_chunk(path, model=model)
+
         transcripts = []
         _, ext = os.path.splitext(os.path.basename(path))
-        chunk_ms = max_chunk_sec * 1000
         
         with tempfile.TemporaryDirectory() as tmpdir:
-            for idx, start in enumerate(range(0, len(audio), chunk_ms)):
-                chunk = audio[start:start + chunk_ms]
+            for idx, start in enumerate(range(0, duration_ms, max_chunk_ms)):
+                chunk = audio[start:start + max_chunk_ms]
                 # 拡張子のドット処理を安全に
                 fmt = ext.lstrip('.') if ext else "mp3"
                 chunk_path = os.path.join(tmpdir, f"chunk_{idx}.{fmt}")
@@ -159,32 +192,14 @@ class MeetingSummarizer:
         prompt, sys_msg = self.build_prompt(transcript, terms, prompt_type)
         try:
             logger.info(f"要約生成リクエスト中 (model={model})...")
-            # 将来的に GPT-5 などの新しいモデルパラメータが必要な場合はここで分岐可能
-            # 現状は Chat Completion API 形式を維持
-            # モデルに応じてパラメータを調整
-            # gpt-5系やo1系は max_completion_tokens を使用する傾向がある
-            # (エラーメッセージ: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.)
-            is_newer_model = model.startswith("gpt-5") or model.startswith("o1")
-            
-            common_params = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": sys_msg},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.5
-            }
-            
-            if is_newer_model:
-                # GPT-5/o1系は reasoning_tokens を消費するため、制限を大幅に緩和する
-                # 1500だと思考だけで使い切ってしまう可能性がある
-                common_params["max_completion_tokens"] = 20000
-            else:
-                common_params["max_tokens"] = 1500
+            response = self.client.responses.create(
+                model=model,
+                instructions=sys_msg,
+                input=prompt,
+                max_output_tokens=1500,
+            )
 
-            resp = self.client.chat.completions.create(**common_params)
-            
-            content = resp.choices[0].message.content
+            content = getattr(response, "output_text", "")
             if content:
                 return content.strip()
             return ""
@@ -288,8 +303,13 @@ def main():
         default="general",
         help="要約のプロンプトタイプを指定"
     )
-    parser.add_argument("--model-transcribe", default="whisper-1", help="文字起こしモデル (default: whisper-1)")
-    parser.add_argument("--model-summarize", default="gpt-4o", help="要約モデル (default: gpt-4o)")
+    parser.add_argument(
+        "--model-transcribe",
+        choices=SUPPORTED_TRANSCRIBE_MODELS,
+        default="gpt-4o-transcribe",
+        help="文字起こしモデル (default: gpt-4o-transcribe)"
+    )
+    parser.add_argument("--model-summarize", default="gpt-5.5", help="要約モデル (default: gpt-5.5)")
 
     args = parser.parse_args()
 
