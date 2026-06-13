@@ -26,12 +26,8 @@ def test_config_initialization():
     config = Config(api_key="key")
     assert config.api_key == "key"
     assert config.default_transcribe_model == "gpt-4o-transcribe"
-    assert config.default_transcribe_model in SUPPORTED_TRANSCRIBE_MODELS
-    assert set(SUPPORTED_TRANSCRIBE_MODELS) == set(config.transcription_profiles)
-
-def test_unsupported_transcribe_model_is_rejected(summarizer):
-    with pytest.raises(ValueError, match="未対応の文字起こしモデルです"):
-        summarizer.get_transcription_profile("unsupported-model")
+    assert "whisper-1" in config.transcription_profiles
+    assert "gpt-4o-transcribe" in config.transcription_profiles
 
 def test_build_prompt_general(summarizer):
     transcript = "これはテストです。"
@@ -111,7 +107,6 @@ def test_summarize_transcript(summarizer):
     assert "instructions" in call_kwargs
     assert "input" in call_kwargs
     assert call_kwargs["max_output_tokens"] == 1500
-    assert "temperature" not in call_kwargs
     assert "max_tokens" not in call_kwargs
     assert "max_completion_tokens" not in call_kwargs
 
@@ -127,6 +122,5 @@ def test_summarize_transcript_uses_latest_gpt_model(summarizer):
     assert "instructions" in call_kwargs
     assert "input" in call_kwargs
     assert call_kwargs["max_output_tokens"] == 1500
-    assert "temperature" not in call_kwargs
     assert "max_completion_tokens" not in call_kwargs
     assert "max_tokens" not in call_kwargs

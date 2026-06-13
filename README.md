@@ -116,7 +116,7 @@ python meeting_summarizer.py long_meeting.mp3 --prompt-type meeting --model-tran
 開発用ライブラリ (`pytest`, `pytest-mock`) がインストールされていれば、テストを実行できます。
 
 ```bash
-pip install --upgrade -r requirements.txt
+pip install -r requirements.txt
 pytest tests/
 ```
 

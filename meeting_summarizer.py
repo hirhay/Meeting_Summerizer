@@ -77,7 +77,7 @@ class MeetingSummarizer:
     def get_transcription_profile(self, model: str) -> TranscriptionModelProfile:
         """サポート対象の文字起こしモデル設定を取得する"""
         if model not in self.config.transcription_profiles:
-            supported = ", ".join(SUPPORTED_TRANSCRIBE_MODELS)
+            supported = ", ".join(sorted(self.config.transcription_profiles))
             raise ValueError(f"未対応の文字起こしモデルです: {model}。対応モデル: {supported}")
         return self.config.transcription_profiles[model]
 
@@ -305,7 +305,7 @@ def main():
     )
     parser.add_argument(
         "--model-transcribe",
-        choices=SUPPORTED_TRANSCRIBE_MODELS,
+        choices=["gpt-4o-transcribe", "whisper-1"],
         default="gpt-4o-transcribe",
         help="文字起こしモデル (default: gpt-4o-transcribe)"
     )
