@@ -39,6 +39,24 @@ def test_build_prompt_general(summarizer):
     assert "冗長な表現を避け" in prompt or "簡潔に" in prompt
     assert "- 用語A" in prompt
     assert "- 用語B" in prompt
+    assert "2000文字以内" in prompt
+    assert "## 概要" in prompt
+    assert "## 重要ポイント" in prompt
+    assert "## 補足" in prompt
+
+def test_build_prompt_meeting(summarizer):
+    prompt, _ = summarizer.build_prompt("会議本文", [], "meeting")
+
+    assert "日本語のMarkdown" in prompt
+    assert "Discord投稿" in prompt
+    assert "## 概要" in prompt
+    assert "## 決定事項" in prompt
+    assert "## アクションアイテム" in prompt
+    assert "## 論点・保留事項" in prompt
+    assert "推測で補完しない" in prompt
+
+def test_build_prompt_presentation(summarizer):
+    prompt, _ = summarizer.build_prompt("発表本文", [], "presentation")
 
 def test_transcribe_audio_small_gpt_file_checks_duration(summarizer):
     # Mock os.path.isfile and os.path.getsize

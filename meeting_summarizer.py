@@ -99,26 +99,41 @@ class MeetingSummarizer:
 
     def build_prompt(self, transcript: str, terms: List[str], prompt_type: str) -> Tuple[str, str]:
         """要約のプロンプトとシステムメッセージを生成"""
+        common_rules = (
+            f"出力は日本語のMarkdownのみ。Discord投稿を想定し、必ず{self.config.summary_char_limit}文字以内に収めてください。\n"
+            "文字起こし由来のフィラー、言い淀み、重複は整理し、意味は変えないでください。\n"
+            "担当者、期限、決定事項、数値、固有名詞は文字起こしから確認できる範囲だけを書き、推測で補完しないでください。\n"
+            "冗長な前置きや「以下に要約します」のような説明は不要です。"
+        )
         types = {
             "meeting": (
-                "あなたは優秀な会議書記担当AIです。以下の会議の文字起こし内容を日本語で**極めて簡潔に**要約してください。\n"
-                "会議の主な目的、前回会議のまとめ、今回議論された主要なポイント、およびネクストアクション"
-                "（担当者と期限が明確な場合はそれも含む）を、構造化された箇条書き（Markdown形式）で示してください。\n"
-                "**【重要】詳細は省き、本質的な意思決定とアクションアイテムのみを抽出してください。各項目は短くまとめてください。**",
-                "前後の会話から文脈を理解し、会議の要点を正確かつ簡潔に抽出し、議事録としてまとめてください。"
+                "以下の会議の文字起こしを、議事録としてMarkdownで整形してください。\n"
+                "構成は次の見出しを基本にしてください。\n"
+                "## 概要\n"
+                "## 決定事項\n"
+                "## アクションアイテム\n"
+                "## 論点・保留事項\n"
+                "アクションアイテムは、担当者と期限が明確な場合のみ含めてください。",
+                "あなたは会議書記担当AIです。会議の目的、決定事項、論点、次のアクションを正確かつ簡潔に整理してください。"
             ),
             "presentation": (
-                "あなたは優秀なレポート作成AIです。以下の発表、講演、または講義の文字起こし内容を日本語で**簡潔に**要約してください。\n"
-                "発表の主要なテーマ、背景、提唱されている中心的なアイデアや議論、重要な論点や発見、"
-                "そして結論や聴衆への主なメッセージを明確に箇条書き（Markdown形式）で示してください。\n"
-                "**【重要】細かい説明は省略し、核心部分のみを抽出してください。**",
-                "質疑応答は質問と回答を端的にまとめてください。発表内容の核心を捉えた簡潔な要約を作成してください。"
+                "以下の発表、講演、または講義の文字起こしを、要点が伝わるMarkdownレポートとして整形してください。\n"
+                "構成は次の見出しを基本にしてください。\n"
+                "## 要旨\n"
+                "## 主要メッセージ\n"
+                "## 根拠・重要ポイント\n"
+                "## Q&A/補足\n"
+                "質疑応答が含まれる場合は、質問と回答を端的にまとめてください。",
+                "あなたは発表内容を整理するレポート作成AIです。テーマ、主張、根拠、結論、聴衆へのメッセージを正確かつ簡潔に抽出してください。"
             ),
             "general": (
-                "あなたは優秀な要約AIです。以下の文字起こし内容を日本語で**簡潔に**要約してください。\n"
-                "テキスト全体の主要な情報を抽出し、最も重要なポイントやトピックを箇条書き（Markdown形式）で分かりやすく示してください。\n"
-                "**【重要】冗長な表現を避け、要点のみをリストアップしてください。**",
-                "与えられたテキストの内容を正確に把握し、非常に簡潔な要約を作成してください。"
+                "以下の一般的な録音の文字起こしを、読みやすいMarkdown要約として整形してください。\n"
+                "構成は次の見出しを基本にしてください。\n"
+                "## 概要\n"
+                "## 重要ポイント\n"
+                "## 補足\n"
+                "会話、メモ、説明など録音内容の性質に合わせて、重要な情報を簡潔に整理してください。",
+                "あなたは要約AIです。録音内容の重要な情報を正確に把握し、短く読みやすいMarkdownに整理してください。"
             )
         }
         core, sys_msg = types.get(prompt_type, types['general'])
@@ -126,10 +141,45 @@ class MeetingSummarizer:
         term_section = ''
         if terms:
             term_list = '\n'.join(f"- {t}" for t in terms)
-            term_section = f"元素名は元素記号で書いてください。また、以下の専門用語を適切に使用してください。:\n{term_list}"
+            term_section = f"以下の専門用語は表記ゆれを抑え、文脈に合う場合は優先して使用してください。\n{term_list}"
 
-        prompt = f"{core}\n{term_section}\n文字起こし:\n---\n{transcript}\n---\n要約 (Markdown):"
+        prompt = f"{common_rules}\n\n{core}\n\n{term_section}\n\n文字起こし:\n---\n{transcript}\n---\n要約 (Markdown):"
         return prompt, sys_msg
+
+    def create_response_text(self, model: str, instructions: str, prompt: str, max_output_tokens: int = 1500) -> str:
+        """Responses APIでテキストを生成し、output_textだけを返す"""
+        response = self.client.responses.create(
+            model=model,
+            instructions=instructions,
+            input=prompt,
+            max_output_tokens=max_output_tokens,
+        )
+        return getattr(response, "output_text", "").strip()
+
+    def compress_summary_for_discord(self, summary: str, model: str) -> str:
+        """Discord投稿向けに要約を2000文字以内へ再圧縮する"""
+        limit = self.config.summary_char_limit
+        if len(summary) <= limit:
+            return summary
+
+        logger.warning(f"要約が{limit}文字を超えたため、Discord投稿向けに再圧縮します。")
+        prompt = (
+            f"以下のMarkdown要約を、意味と重要な決定事項・アクションを保ったまま日本語で{limit}文字以内に再圧縮してください。\n"
+            "出力はMarkdown本文のみ。前置きや説明は不要です。\n"
+            "不明な情報を推測で追加しないでください。\n\n"
+            "要約:\n---\n"
+            f"{summary}\n"
+            "---"
+        )
+        compressed = self.create_response_text(
+            model=model,
+            instructions="あなたはDiscord投稿向けにMarkdown要約を短く整える編集AIです。",
+            prompt=prompt,
+            max_output_tokens=1200,
+        )
+        if len(compressed) > limit:
+            logger.warning(f"再圧縮後の要約も{limit}文字を超えています。")
+        return compressed
 
     def _transcribe_chunk(self, path: str, model: str, language: str = "ja") -> str:
         """指定モデルで単一チャンクを文字起こしする"""
@@ -206,7 +256,7 @@ class MeetingSummarizer:
 
             content = getattr(response, "output_text", "")
             if content:
-                return content.strip()
+                return self.compress_summary_for_discord(content, model=model)
             return ""
         except Exception as e:
             logger.error(f"要約中にエラーが発生しました: {e}")
