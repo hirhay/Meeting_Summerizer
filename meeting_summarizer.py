@@ -247,20 +247,51 @@ class MeetingSummarizer:
         prompt, sys_msg = self.build_prompt(transcript, terms, prompt_type)
         try:
             logger.info(f"要約生成リクエスト中 (model={model})...")
-            response = self.client.responses.create(
+            content = self.create_response_text(
                 model=model,
                 instructions=sys_msg,
-                input=prompt,
+                prompt=prompt,
                 max_output_tokens=1500,
             )
 
-            content = getattr(response, "output_text", "")
             if content:
                 return self.compress_summary_for_discord(content, model=model)
             return ""
         except Exception as e:
             logger.error(f"要約中にエラーが発生しました: {e}")
             sys.exit(1)
+
+    def save_summary_markdown(
+        self,
+        md_path: str,
+        audio_filename: str,
+        summary: str,
+        prompt_type: str,
+        transcribe_model: str,
+        summarize_model: str,
+    ) -> None:
+        """要約Markdownをメタ情報つきで保存する"""
+        summary_length = len(summary)
+        generated_at = datetime.datetime.now().isoformat(timespec="seconds")
+        warning = ""
+        if summary_length > self.config.summary_char_limit:
+            warning = (
+                f"\n> ⚠️ 要約がDiscord投稿目安の{self.config.summary_char_limit}文字を超えています。"
+                "必要に応じて手動で分割してください。\n"
+            )
+
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(f"# 要約: {os.path.splitext(audio_filename)[0]}\n\n")
+            f.write("## メタ情報\n\n")
+            f.write(f"- 音声ファイル: `{audio_filename}`\n")
+            f.write(f"- プロンプト種別: `{prompt_type}`\n")
+            f.write(f"- 文字起こしモデル: `{transcribe_model}`\n")
+            f.write(f"- 要約モデル: `{summarize_model}`\n")
+            f.write(f"- 生成日時: `{generated_at}`\n")
+            f.write(f"- 要約文字数: `{summary_length}/{self.config.summary_char_limit}`\n")
+            f.write(warning)
+            f.write("\n---\n\n")
+            f.write(summary)
 
     def run(self, audio_file: str, prompt_type: str, transcribe_model: str, summarize_model: str):
         # 1. オーディオファイル名のフォルダ作成 (カレントディレクトリ)
@@ -324,25 +355,14 @@ class MeetingSummarizer:
         md_filename = f"{base_name}_summary_{summarize_model}.md"
         md_path = os.path.join(target_dir, md_filename)
         try:
-            with open(md_path, 'w', encoding='utf-8') as f:
-                f.write(f"# 要約: {base_name} ({summarize_model})\n\n")
-                f.write(summary)
-            logger.info(f"要約を'{md_path}'に保存しました。")
-        except Exception as e:
-            logger.error(f"ファイル保存エラー: {e}")
-
-    def _save_results(self, audio_file: str, summary: str):
-        now = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-        output_dir = now
-        os.makedirs(output_dir, exist_ok=True)
-
-        base = os.path.splitext(os.path.basename(audio_file))[0]
-        md_path = os.path.join(output_dir, f"{base}.md")
-        
-        try:
-            with open(md_path, 'w', encoding='utf-8') as f:
-                f.write(f"# 要約: {base}\n\n")
-                f.write(summary)
+            self.save_summary_markdown(
+                md_path=md_path,
+                audio_filename=os.path.basename(audio_file),
+                summary=summary,
+                prompt_type=prompt_type,
+                transcribe_model=transcribe_model,
+                summarize_model=summarize_model,
+            )
             logger.info(f"要約を'{md_path}'に保存しました。")
         except Exception as e:
             logger.error(f"ファイル保存エラー: {e}")
@@ -360,11 +380,16 @@ def main():
     )
     parser.add_argument(
         "--model-transcribe",
-        choices=["gpt-4o-transcribe", "whisper-1"],
-        default="gpt-4o-transcribe",
-        help="文字起こしモデル (default: gpt-4o-transcribe)"
+        choices=SUPPORTED_TRANSCRIBE_MODELS,
+        default=DEFAULT_TRANSCRIBE_MODEL,
+        help=f"文字起こしモデル (default: {DEFAULT_TRANSCRIBE_MODEL})"
     )
-    parser.add_argument("--model-summarize", default="gpt-5.5", help="要約モデル (default: gpt-5.5)")
+    parser.add_argument(
+        "--model-summarize",
+        choices=SUPPORTED_SUMMARIZE_MODELS,
+        default=DEFAULT_SUMMARIZE_MODEL,
+        help=f"要約モデル (default: {DEFAULT_SUMMARIZE_MODEL})"
+    )
 
     args = parser.parse_args()
 

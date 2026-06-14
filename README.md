@@ -13,6 +13,8 @@
     *   音声ファイルをそのフォルダにコピー。
     *   文字起こし結果 (`_transcript_<model>.txt`) をキャッシュし、再実行時はAPIコストを節約。
     *   要約結果 (`_summary_<model>.md`) も同フォルダに保存。
+*   **用途別プロンプト**: `meeting` / `presentation` / `general` で、会議・発表・一般録音に合わせたMarkdown構成を使用。
+*   **Discord投稿向け制限**: 要約は2000文字以内を指示し、超過した場合は1回だけ再圧縮します。
 *   **専門用語辞書**: `special_terms.txt` に用語を定義することで、文字起こしや要約の精度を向上。
 
 ## 必要要件
@@ -66,9 +68,9 @@ python meeting_summarizer.py <音声ファイルパス> [オプション]
 
 *   `audio_file`: (必須) 処理対象の音声ファイルパス。
 *   `--prompt-type`: 要約のタイプを指定 (デフォルト: `general`)
-    *   `general`: 一般的な要約
-    *   `meeting`: 会議議事録向け（目的、決定事項、アクションなど）
-    *   `presentation`: プレゼン・講演向け（テーマ、結論、Q&Aなど）
+    *   `general`: 一般録音向け（`概要` / `重要ポイント` / `補足`）
+    *   `meeting`: 会議議事録向け（`概要` / `決定事項` / `アクションアイテム` / `論点・保留事項`）
+    *   `presentation`: プレゼン・講演向け（`要旨` / `主要メッセージ` / `根拠・重要ポイント` / `Q&A/補足`）
 *   `--model-transcribe`: 文字起こしモデル (デフォルト: `gpt-4o-transcribe`)
     *   `gpt-4o-transcribe`: 精度を優先する場合に推奨。長尺音声は20分単位に分割します。
     *   `whisper-1`: 25MB以内なら長めのMP3を一括処理しやすいモデル。25MBを超える場合は分割します。
@@ -113,8 +115,19 @@ python meeting_summarizer.py long_meeting.mp3 --prompt-type meeting --model-tran
 ./MyMeeting/
 ├── MyMeeting.mp3                             # コピーされた音声ファイル
 ├── MyMeeting_transcript_gpt-4o-transcribe.txt # 文字起こしテキスト (キャッシュ)
-└── MyMeeting_summary_gpt-5.5.md              # 作成された要約
+└── MyMeeting_summary_gpt-5.5.md              # メタ情報つきMarkdown要約
 ```
+
+作成されるMarkdown要約には、以下のメタ情報が含まれます。
+
+*   音声ファイル名
+*   プロンプト種別
+*   文字起こしモデル
+*   要約モデル
+*   生成日時
+*   要約文字数 (`現在文字数/上限文字数`)
+
+要約が2000文字を超えて保存される場合は、Markdown内にDiscord投稿目安を超過している警告を出力します。
 
 ## 開発・テスト
 
