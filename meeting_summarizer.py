@@ -4,7 +4,7 @@
 音声ファイルを文字起こしし、要約をMarkdownファイルに保存するスタンドアロンスクリプト。
 
 使用方法:
-    python meeting_summarizer.py <audio_file> [--prompt-type {general,meeting,presentation}] [--model-transcribe whisper-1] [--model-summarize gpt-4o]
+    python meeting_summarizer.py <audio_file> [--prompt-type {general,meeting,presentation}] [--model-transcribe {gpt-4o-transcribe,whisper-1}] [--model-summarize gpt-5.5]
 
 要約結果は処理実行日時(YYYYMMDD_HHMM)のフォルダに格納されます。
 """
@@ -14,25 +14,54 @@ import argparse
 import logging
 import datetime
 import tempfile
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 from openai import OpenAI
 from pydub import AudioSegment
 from pydub.exceptions import CouldntDecodeError
 
+DEFAULT_TRANSCRIBE_MODEL = "gpt-4o-transcribe"
+DEFAULT_SUMMARIZE_MODEL = "gpt-5.5"
+SUPPORTED_TRANSCRIBE_MODELS = (DEFAULT_TRANSCRIBE_MODEL, "whisper-1")
+SUPPORTED_SUMMARIZE_MODELS = (DEFAULT_SUMMARIZE_MODEL,)
+
 # --- 設定クラス ---
+@dataclass(frozen=True)
+class TranscriptionModelProfile:
+    """文字起こしモデルごとの安全な分割設定"""
+    max_file_size_mb: int
+    max_chunk_sec: Optional[int]
+    check_duration_before_upload: bool
+
+
 @dataclass
 class Config:
     api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
     max_file_size_mb: int = 25
     audio_chunk_length_ms: int = 30 * 60 * 1000  # 30分
     special_terms_file: str = os.path.join(os.path.dirname(__file__), "special_terms.txt")
-    default_transcribe_model: str = "whisper-1"
-    default_summarize_model: str = "gpt-4o"
-    # GPT-4oなどはチャンク長を長く取れるが、安全側でWhisperに合わせて設定するか、モデルごとに変えるロジックを維持
-    chunk_sec_gpt4o: int = 1200
-    chunk_sec_default: int = 600
+    default_transcribe_model: str = DEFAULT_TRANSCRIBE_MODEL
+    default_summarize_model: str = DEFAULT_SUMMARIZE_MODEL
+    summary_char_limit: int = 2000
+    transcription_profiles: Optional[Dict[str, TranscriptionModelProfile]] = None
+
+    def __post_init__(self):
+        if self.transcription_profiles is None:
+            self.transcription_profiles = {
+                # Whisperは主に25MBのアップロード上限を意識し、長さ制限は設けない。
+                "whisper-1": TranscriptionModelProfile(
+                    max_file_size_mb=25,
+                    max_chunk_sec=None,
+                    check_duration_before_upload=False,
+                ),
+                # gpt-4o-transcribeは精度面のメリットがある一方、長尺音声は安全側で20分単位に分割する。
+                "gpt-4o-transcribe": TranscriptionModelProfile(
+                    max_file_size_mb=25,
+                    max_chunk_sec=20 * 60,
+                    check_duration_before_upload=True,
+                ),
+            }
 
 # --- ロギング設定 ---
 logging.basicConfig(
@@ -49,6 +78,13 @@ class MeetingSummarizer:
             sys.exit(1)
         self.client = OpenAI(api_key=self.config.api_key)
 
+    def get_transcription_profile(self, model: str) -> TranscriptionModelProfile:
+        """サポート対象の文字起こしモデル設定を取得する"""
+        if model not in self.config.transcription_profiles:
+            supported = ", ".join(SUPPORTED_TRANSCRIBE_MODELS)
+            raise ValueError(f"未対応の文字起こしモデルです: {model}。対応モデル: {supported}")
+        return self.config.transcription_profiles[model]
+
     def load_special_terms(self) -> List[str]:
         """専門用語リストを読み込む"""
         if not os.path.exists(self.config.special_terms_file):
@@ -62,26 +98,41 @@ class MeetingSummarizer:
 
     def build_prompt(self, transcript: str, terms: List[str], prompt_type: str) -> Tuple[str, str]:
         """要約のプロンプトとシステムメッセージを生成"""
+        common_rules = (
+            f"出力は日本語のMarkdownのみ。Discord投稿を想定し、必ず{self.config.summary_char_limit}文字以内に収めてください。\n"
+            "文字起こし由来のフィラー、言い淀み、重複は整理し、意味は変えないでください。\n"
+            "担当者、期限、決定事項、数値、固有名詞は文字起こしから確認できる範囲だけを書き、推測で補完しないでください。\n"
+            "冗長な前置きや「以下に要約します」のような説明は不要です。"
+        )
         types = {
             "meeting": (
-                "あなたは優秀な会議書記担当AIです。以下の会議の文字起こし内容を日本語で**極めて簡潔に**要約してください。\n"
-                "会議の主な目的、前回会議のまとめ、今回議論された主要なポイント、およびネクストアクション"
-                "（担当者と期限が明確な場合はそれも含む）を、構造化された箇条書き（Markdown形式）で示してください。\n"
-                "**【重要】詳細は省き、本質的な意思決定とアクションアイテムのみを抽出してください。各項目は短くまとめてください。**",
-                "前後の会話から文脈を理解し、会議の要点を正確かつ簡潔に抽出し、議事録としてまとめてください。"
+                "以下の会議の文字起こしを、議事録としてMarkdownで整形してください。\n"
+                "構成は次の見出しを基本にしてください。\n"
+                "## 概要\n"
+                "## 決定事項\n"
+                "## アクションアイテム\n"
+                "## 論点・保留事項\n"
+                "アクションアイテムは、担当者と期限が明確な場合のみ含めてください。",
+                "あなたは会議書記担当AIです。会議の目的、決定事項、論点、次のアクションを正確かつ簡潔に整理してください。"
             ),
             "presentation": (
-                "あなたは優秀なレポート作成AIです。以下の発表、講演、または講義の文字起こし内容を日本語で**簡潔に**要約してください。\n"
-                "発表の主要なテーマ、背景、提唱されている中心的なアイデアや議論、重要な論点や発見、"
-                "そして結論や聴衆への主なメッセージを明確に箇条書き（Markdown形式）で示してください。\n"
-                "**【重要】細かい説明は省略し、核心部分のみを抽出してください。**",
-                "質疑応答は質問と回答を端的にまとめてください。発表内容の核心を捉えた簡潔な要約を作成してください。"
+                "以下の発表、講演、または講義の文字起こしを、要点が伝わるMarkdownレポートとして整形してください。\n"
+                "構成は次の見出しを基本にしてください。\n"
+                "## 要旨\n"
+                "## 主要メッセージ\n"
+                "## 根拠・重要ポイント\n"
+                "## Q&A/補足\n"
+                "質疑応答が含まれる場合は、質問と回答を端的にまとめてください。",
+                "あなたは発表内容を整理するレポート作成AIです。テーマ、主張、根拠、結論、聴衆へのメッセージを正確かつ簡潔に抽出してください。"
             ),
             "general": (
-                "あなたは優秀な要約AIです。以下の文字起こし内容を日本語で**簡潔に**要約してください。\n"
-                "テキスト全体の主要な情報を抽出し、最も重要なポイントやトピックを箇条書き（Markdown形式）で分かりやすく示してください。\n"
-                "**【重要】冗長な表現を避け、要点のみをリストアップしてください。**",
-                "与えられたテキストの内容を正確に把握し、非常に簡潔な要約を作成してください。"
+                "以下の一般的な録音の文字起こしを、読みやすいMarkdown要約として整形してください。\n"
+                "構成は次の見出しを基本にしてください。\n"
+                "## 概要\n"
+                "## 重要ポイント\n"
+                "## 補足\n"
+                "会話、メモ、説明など録音内容の性質に合わせて、重要な情報を簡潔に整理してください。",
+                "あなたは要約AIです。録音内容の重要な情報を正確に把握し、短く読みやすいMarkdownに整理してください。"
             )
         }
         core, sys_msg = types.get(prompt_type, types['general'])
@@ -89,10 +140,45 @@ class MeetingSummarizer:
         term_section = ''
         if terms:
             term_list = '\n'.join(f"- {t}" for t in terms)
-            term_section = f"元素名は元素記号で書いてください。また、以下の専門用語を適切に使用してください。:\n{term_list}"
+            term_section = f"以下の専門用語は表記ゆれを抑え、文脈に合う場合は優先して使用してください。\n{term_list}"
 
-        prompt = f"{core}\n{term_section}\n文字起こし:\n---\n{transcript}\n---\n要約 (Markdown):"
+        prompt = f"{common_rules}\n\n{core}\n\n{term_section}\n\n文字起こし:\n---\n{transcript}\n---\n要約 (Markdown):"
         return prompt, sys_msg
+
+    def create_response_text(self, model: str, instructions: str, prompt: str, max_output_tokens: int = 1500) -> str:
+        """Responses APIでテキストを生成し、output_textだけを返す"""
+        response = self.client.responses.create(
+            model=model,
+            instructions=instructions,
+            input=prompt,
+            max_output_tokens=max_output_tokens,
+        )
+        return getattr(response, "output_text", "").strip()
+
+    def compress_summary_for_discord(self, summary: str, model: str) -> str:
+        """Discord投稿向けに要約を2000文字以内へ再圧縮する"""
+        limit = self.config.summary_char_limit
+        if len(summary) <= limit:
+            return summary
+
+        logger.warning(f"要約が{limit}文字を超えたため、Discord投稿向けに再圧縮します。")
+        prompt = (
+            f"以下のMarkdown要約を、意味と重要な決定事項・アクションを保ったまま日本語で{limit}文字以内に再圧縮してください。\n"
+            "出力はMarkdown本文のみ。前置きや説明は不要です。\n"
+            "不明な情報を推測で追加しないでください。\n\n"
+            "要約:\n---\n"
+            f"{summary}\n"
+            "---"
+        )
+        compressed = self.create_response_text(
+            model=model,
+            instructions="あなたはDiscord投稿向けにMarkdown要約を短く整える編集AIです。",
+            prompt=prompt,
+            max_output_tokens=1200,
+        )
+        if len(compressed) > limit:
+            logger.warning(f"再圧縮後の要約も{limit}文字を超えています。")
+        return compressed
 
     def _transcribe_chunk(self, path: str, model: str, language: str = "ja") -> str:
         """指定モデルで単一チャンクを文字起こしする"""
@@ -114,20 +200,15 @@ class MeetingSummarizer:
         if not os.path.isfile(path):
             raise FileNotFoundError(f"ファイルが見つかりません: {path}")
 
+        profile = self.get_transcription_profile(model)
         size_mb = os.path.getsize(path) / (1024 * 1024)
         logger.info(f"文字起こし開始: {path} ({size_mb:.2f}MB, model={model})")
 
-        # 安全チャンク長の決定
-        if model.startswith("gpt-4o"):
-            max_chunk_sec = self.config.chunk_sec_gpt4o
-        else:
-            max_chunk_sec = self.config.chunk_sec_default
-
-        # 小ファイルは一括処理
-        if size_mb <= self.config.max_file_size_mb:
+        # 小ファイルかつモデル側の時間チェックが不要な場合は一括処理
+        if size_mb <= profile.max_file_size_mb and not profile.check_duration_before_upload:
             return self._transcribe_chunk(path, model=model)
 
-        # 大ファイルはチャンク分割
+        # gpt-4o-transcribeのように長尺音声を安全側で分割したいモデル、または大ファイルは音声長を見て分割する
         try:
             audio = AudioSegment.from_file(path)
         except CouldntDecodeError:
@@ -137,13 +218,19 @@ class MeetingSummarizer:
             logger.error(f"音声読み込みエラー: {e}")
             sys.exit(1)
 
+        duration_ms = len(audio)
+        max_chunk_ms = profile.max_chunk_sec * 1000 if profile.max_chunk_sec else duration_ms
+
+        # サイズ・長さのどちらもモデル設定内なら一括処理
+        if size_mb <= profile.max_file_size_mb and duration_ms <= max_chunk_ms:
+            return self._transcribe_chunk(path, model=model)
+
         transcripts = []
         _, ext = os.path.splitext(os.path.basename(path))
-        chunk_ms = max_chunk_sec * 1000
         
         with tempfile.TemporaryDirectory() as tmpdir:
-            for idx, start in enumerate(range(0, len(audio), chunk_ms)):
-                chunk = audio[start:start + chunk_ms]
+            for idx, start in enumerate(range(0, duration_ms, max_chunk_ms)):
+                chunk = audio[start:start + max_chunk_ms]
                 # 拡張子のドット処理を安全に
                 fmt = ext.lstrip('.') if ext else "mp3"
                 chunk_path = os.path.join(tmpdir, f"chunk_{idx}.{fmt}")
@@ -159,38 +246,51 @@ class MeetingSummarizer:
         prompt, sys_msg = self.build_prompt(transcript, terms, prompt_type)
         try:
             logger.info(f"要約生成リクエスト中 (model={model})...")
-            # 将来的に GPT-5 などの新しいモデルパラメータが必要な場合はここで分岐可能
-            # 現状は Chat Completion API 形式を維持
-            # モデルに応じてパラメータを調整
-            # gpt-5系やo1系は max_completion_tokens を使用する傾向がある
-            # (エラーメッセージ: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.)
-            is_newer_model = model.startswith("gpt-5") or model.startswith("o1")
-            
-            common_params = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": sys_msg},
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.5
-            }
-            
-            if is_newer_model:
-                # GPT-5/o1系は reasoning_tokens を消費するため、制限を大幅に緩和する
-                # 1500だと思考だけで使い切ってしまう可能性がある
-                common_params["max_completion_tokens"] = 20000
-            else:
-                common_params["max_tokens"] = 1500
+            content = self.create_response_text(
+                model=model,
+                instructions=sys_msg,
+                prompt=prompt,
+                max_output_tokens=1500,
+            )
 
-            resp = self.client.chat.completions.create(**common_params)
-            
-            content = resp.choices[0].message.content
             if content:
-                return content.strip()
+                return self.compress_summary_for_discord(content, model=model)
             return ""
         except Exception as e:
             logger.error(f"要約中にエラーが発生しました: {e}")
             sys.exit(1)
+
+    def save_summary_markdown(
+        self,
+        md_path: str,
+        audio_filename: str,
+        summary: str,
+        prompt_type: str,
+        transcribe_model: str,
+        summarize_model: str,
+    ) -> None:
+        """要約Markdownをメタ情報つきで保存する"""
+        summary_length = len(summary)
+        generated_at = datetime.datetime.now().isoformat(timespec="seconds")
+        warning = ""
+        if summary_length > self.config.summary_char_limit:
+            warning = (
+                f"\n> ⚠️ 要約がDiscord投稿目安の{self.config.summary_char_limit}文字を超えています。"
+                "必要に応じて手動で分割してください。\n"
+            )
+
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(f"# 要約: {os.path.splitext(audio_filename)[0]}\n\n")
+            f.write("## メタ情報\n\n")
+            f.write(f"- 音声ファイル: `{audio_filename}`\n")
+            f.write(f"- プロンプト種別: `{prompt_type}`\n")
+            f.write(f"- 文字起こしモデル: `{transcribe_model}`\n")
+            f.write(f"- 要約モデル: `{summarize_model}`\n")
+            f.write(f"- 生成日時: `{generated_at}`\n")
+            f.write(f"- 要約文字数: `{summary_length}/{self.config.summary_char_limit}`\n")
+            f.write(warning)
+            f.write("\n---\n\n")
+            f.write(summary)
 
     def run(self, audio_file: str, prompt_type: str, transcribe_model: str, summarize_model: str):
         # 1. オーディオファイル名のフォルダ作成 (カレントディレクトリ)
@@ -254,25 +354,14 @@ class MeetingSummarizer:
         md_filename = f"{base_name}_summary_{summarize_model}.md"
         md_path = os.path.join(target_dir, md_filename)
         try:
-            with open(md_path, 'w', encoding='utf-8') as f:
-                f.write(f"# 要約: {base_name} ({summarize_model})\n\n")
-                f.write(summary)
-            logger.info(f"要約を'{md_path}'に保存しました。")
-        except Exception as e:
-            logger.error(f"ファイル保存エラー: {e}")
-
-    def _save_results(self, audio_file: str, summary: str):
-        now = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-        output_dir = now
-        os.makedirs(output_dir, exist_ok=True)
-
-        base = os.path.splitext(os.path.basename(audio_file))[0]
-        md_path = os.path.join(output_dir, f"{base}.md")
-        
-        try:
-            with open(md_path, 'w', encoding='utf-8') as f:
-                f.write(f"# 要約: {base}\n\n")
-                f.write(summary)
+            self.save_summary_markdown(
+                md_path=md_path,
+                audio_filename=os.path.basename(audio_file),
+                summary=summary,
+                prompt_type=prompt_type,
+                transcribe_model=transcribe_model,
+                summarize_model=summarize_model,
+            )
             logger.info(f"要約を'{md_path}'に保存しました。")
         except Exception as e:
             logger.error(f"ファイル保存エラー: {e}")
@@ -288,8 +377,18 @@ def main():
         default="general",
         help="要約のプロンプトタイプを指定"
     )
-    parser.add_argument("--model-transcribe", default="whisper-1", help="文字起こしモデル (default: whisper-1)")
-    parser.add_argument("--model-summarize", default="gpt-4o", help="要約モデル (default: gpt-4o)")
+    parser.add_argument(
+        "--model-transcribe",
+        choices=SUPPORTED_TRANSCRIBE_MODELS,
+        default=DEFAULT_TRANSCRIBE_MODEL,
+        help=f"文字起こしモデル (default: {DEFAULT_TRANSCRIBE_MODEL})"
+    )
+    parser.add_argument(
+        "--model-summarize",
+        choices=SUPPORTED_SUMMARIZE_MODELS,
+        default=DEFAULT_SUMMARIZE_MODEL,
+        help=f"要約モデル (default: {DEFAULT_SUMMARIZE_MODEL})"
+    )
 
     args = parser.parse_args()
 
