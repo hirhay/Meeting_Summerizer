@@ -41,9 +41,8 @@ class Config:
     max_file_size_mb: int = 25
     audio_chunk_length_ms: int = 30 * 60 * 1000  # 30分
     special_terms_file: str = os.path.join(os.path.dirname(__file__), "special_terms.txt")
-    default_transcribe_model: str = DEFAULT_TRANSCRIBE_MODEL
-    default_summarize_model: str = DEFAULT_SUMMARIZE_MODEL
-    summary_char_limit: int = 2000
+    default_transcribe_model: str = "gpt-4o-transcribe"
+    default_summarize_model: str = "gpt-5.5"
     transcription_profiles: Optional[Dict[str, TranscriptionModelProfile]] = None
 
     def __post_init__(self):
@@ -70,6 +69,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SUPPORTED_TRANSCRIBE_MODELS = ("gpt-4o-transcribe", "whisper-1")
+
 class MeetingSummarizer:
     def __init__(self, config: Config):
         self.config = config
@@ -81,7 +82,7 @@ class MeetingSummarizer:
     def get_transcription_profile(self, model: str) -> TranscriptionModelProfile:
         """サポート対象の文字起こしモデル設定を取得する"""
         if model not in self.config.transcription_profiles:
-            supported = ", ".join(SUPPORTED_TRANSCRIBE_MODELS)
+            supported = ", ".join(sorted(self.config.transcription_profiles))
             raise ValueError(f"未対応の文字起こしモデルです: {model}。対応モデル: {supported}")
         return self.config.transcription_profiles[model]
 
